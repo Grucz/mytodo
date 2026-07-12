@@ -326,27 +326,34 @@ function renderProject(p, siblings, searching) {
     ));
   }
 
-  // Uppgifter
+  // Uppgifter – aktiva överst, klara samlade i egen lista längst ner
   const list = h("div", { class: "task-list" });
   const tops = allTasks.filter((t) => !t.parent_task_id).sort(byOrder);
   const subsOf = (id) => allTasks.filter((t) => t.parent_task_id === id).sort(byOrder);
-  const showDone = state.showDone.has(p.id) || searching;
-  let hiddenDone = 0;
+  const showDone = state.showDone.has(p.id);
+  const doneRows = [];
+  let doneCount = 0;
 
   const scheduledHidden = (t) => t.scheduled_date && localDateStr(t.scheduled_date) > today;
 
   for (const t of tops) {
     const subs = subsOf(t.id);
-    const isDone = t.status === "completed";
     const skipByFilter = visibleFilter && !visibleFilter.has(t.id) && !subs.some((s) => visibleFilter.has(s.id));
     if (skipByFilter) continue;
     if (!searching && scheduledHidden(t)) continue;
-    if (isDone && !showDone) { hiddenDone += 1 + subs.filter((s) => s.status === "completed").length; continue; }
+
+    // Klar huvuduppgift: hela gruppen (inkl. deluppgifter) flyttas till klara-listan
+    if (t.status === "completed" && !searching) {
+      doneRows.push(taskRow(t, tops, false));
+      for (const s of subs) doneRows.push(taskRow(s, subs, true));
+      doneCount += 1 + subs.length;
+      continue;
+    }
 
     list.append(taskRow(t, tops, false));
     for (const s of subs) {
       if (visibleFilter && !visibleFilter.has(s.id) && !visibleFilter.has(t.id)) continue;
-      if (s.status === "completed" && !showDone) { hiddenDone++; continue; }
+      if (s.status === "completed" && !searching) { doneRows.push(taskRow(s, subs, true)); doneCount++; continue; }
       list.append(taskRow(s, subs, true));
     }
   }
@@ -358,12 +365,14 @@ function renderProject(p, siblings, searching) {
       render();
     }, "add-task"));
 
-    if (hiddenDone > 0 || state.showDone.has(p.id)) {
-      const shown = state.showDone.has(p.id);
+    if (doneCount > 0) {
       card.append(h("button", { class: "show-done", onclick: () => {
-        shown ? state.showDone.delete(p.id) : state.showDone.add(p.id);
+        showDone ? state.showDone.delete(p.id) : state.showDone.add(p.id);
         render();
-      } }, shown ? "Dölj klara" : `👁 Visa klara (${hiddenDone})`));
+      } }, showDone ? "Dölj klara" : `👁 Visa klara (${doneCount})`));
+      if (showDone) card.append(h("div", { class: "task-list done-list" }, doneRows));
+    } else if (showDone) {
+      state.showDone.delete(p.id);
     }
   }
   return card;
@@ -408,9 +417,15 @@ function projectMenu(btn, p, siblings) {
   ]);
 }
 
+function noteIcon() {
+  const s = h("span", { class: "note-ico", title: "Har anteckning – klicka på uppgiften" });
+  s.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 13h6"/><path d="M9 17h4"/></svg>';
+  return s;
+}
+
 function taskRow(t, siblings, isSub) {
   const done = t.status === "completed";
-  const row = h("div", { class: "task" + (isSub ? " sub" : "") + (done ? " done" : "") });
+  const row = h("div", { class: "task" + (isSub ? " sub" : "") + (done ? " done" : "") + (t.status === "in_progress" ? " inprog" : "") });
 
   row.append(h("button", {
     class: "task-check " + t.status,
@@ -431,10 +446,9 @@ function taskRow(t, siblings, isSub) {
   if (t.scheduled_date && localDateStr(t.scheduled_date) > todayStr()) {
     meta.push(h("span", { class: "badge" }, "⏰ " + fmtShort.format(new Date(t.scheduled_date))));
   }
-  if (t.notes) meta.push(h("span", { class: "badge note" }, "📝"));
-
   row.append(h("div", { class: "task-title", onclick: () => openTaskDialog(t) },
     t.title,
+    t.notes ? noteIcon() : null,
     meta.length ? h("div", { class: "task-meta" }, meta) : null
   ));
 
@@ -602,8 +616,9 @@ function openTaskDialog(t) {
   dlgTask = t;
   $("#task-dlg-title").textContent = "Redigera uppgift";
   $("#task-title").value = t.title;
-  $("#task-desc").value = t.description || "";
-  $("#task-notes").value = t.notes || "";
+  // Äldre uppgifter kan ha text i beskrivningsfältet – den visas här och
+  // flyttas till anteckningar vid nästa sparning.
+  $("#task-notes").value = t.notes || t.description || "";
   $("#task-status").value = t.status;
   $("#task-deadline").value = dateInputFromIso(t.deadline);
   $("#task-scheduled").value = dateInputFromIso(t.scheduled_date);
@@ -614,7 +629,7 @@ $("#task-form").addEventListener("submit", async (e) => {
   const status = $("#task-status").value;
   await dbUpdate("tasks", dlgTask.id, {
     title: $("#task-title").value.trim(),
-    description: $("#task-desc").value.trim() || null,
+    description: null,
     notes: $("#task-notes").value.trim() || null,
     status,
     completed_at: status === "completed" ? (dlgTask.completed_at || new Date().toISOString()) : null,
@@ -738,7 +753,8 @@ $("#import-run").addEventListener("click", async () => {
     const mapTask = (t, i) => ({
       project_id: projMap.get(t.projectId),
       parent_task_id: t.parentTaskId ? taskMap.get(t.parentTaskId) : null,
-      title: t.title, description: t.description || null, notes: t.notes || null,
+      title: t.title, description: null,
+      notes: [t.description, t.notes].filter(Boolean).join("\n\n") || null,
       status: t.completed ? "completed" : (t.status || "pending"),
       completed_at: t.completed ? (t.updatedAt || new Date().toISOString()) : null,
       deadline: msToIso(t.deadline), scheduled_date: msToIso(t.scheduledDate),
