@@ -309,8 +309,8 @@ function renderProject(p, siblings, searching) {
     h("button", { class: "btn-icon", onclick: (e) => { e.stopPropagation(); projectMenu(e.currentTarget, p, siblings); } }, "⋯")
   ));
 
-  if (p.description) card.append(h("div", { class: "project-desc", onclick: () => openNotesDialog(p) }, p.description));
-  if (p.notes) card.append(h("div", { class: "project-notes", onclick: () => openNotesDialog(p) }, p.notes));
+  const descText = [p.description, p.notes].filter(Boolean).join("\n\n");
+  if (descText) card.append(h("div", { class: "project-desc", onclick: () => openNotesDialog(p) }, descText));
 
   // Händelser
   for (const ev of events) {
@@ -397,7 +397,7 @@ function startRename(nameEl, p) {
 function projectMenu(btn, p, siblings) {
   const otherAreas = state.areas.filter((a) => !a.archived && a.id !== p.area_id).sort(byOrder);
   openCtxMenu(btn, [
-    { label: "Beskrivning & anteckningar…", action: () => openNotesDialog(p) },
+    { label: "Redigera beskrivning…", action: () => openNotesDialog(p) },
     { label: "Lägg till händelse…", action: () => openEventDialog(p.id, null) },
     "-",
     { label: "Flytta upp", action: () => moveWithin("projects", siblings, p, -1, state.projects) },
@@ -677,15 +677,15 @@ $("#event-delete").addEventListener("click", async () => {
 let dlgNotesProject = null;
 function openNotesDialog(p) {
   dlgNotesProject = p;
-  $("#proj-desc").value = p.description || "";
-  $("#proj-notes").value = p.notes || "";
+  // Ev. äldre anteckningar visas ihop med beskrivningen och sparas som en text
+  $("#proj-desc").value = [p.description, p.notes].filter(Boolean).join("\n\n");
   $("#dlg-notes").showModal();
 }
 $("#notes-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   await dbUpdate("projects", dlgNotesProject.id, {
     description: $("#proj-desc").value.trim() || null,
-    notes: $("#proj-notes").value.trim() || null,
+    notes: null,
   }, state.projects);
   $("#dlg-notes").close(); render();
 });
@@ -742,7 +742,8 @@ $("#import-run").addEventListener("click", async () => {
     const { data: newProjects, error: ep } = await sb.from("projects")
       .insert(oldProjects.map((p, i) => ({
         area_id: areaMap.get(p.areaId), name: p.name,
-        description: p.description || null, notes: p.notes || null,
+        description: [p.description, p.notes].filter(Boolean).join("\n\n") || null,
+        notes: null,
         sort_order: i, archived: !!p.archived,
       }))).select();
     if (ep) throw ep;
